@@ -245,6 +245,7 @@ class Scheduler:
                     curr_loras.add(lora_int_id)
                 self.waiting.popleft()
                 self._allocate(seq_group)
+                # logger.info("wait allocate")
                 self.running.append(seq_group)
                 num_curr_seqs += num_new_seqs
                 scheduled.append(seq_group)
@@ -389,6 +390,7 @@ class Scheduler:
                 state=seq_group.state,
             )
             seq_group_metadata_list.append(seq_group_metadata)
+        
         return seq_group_metadata_list, scheduler_outputs
 
     def fork_seq(self, parent_seq: Sequence, child_seq: Sequence) -> None:
@@ -402,6 +404,7 @@ class Scheduler:
                              if not seq_group.is_finished())
 
     def _allocate(self, seq_group: SequenceGroup) -> None:
+        logger.info("scheduler _allocate")
         self.block_manager.allocate(seq_group)
         for seq in seq_group.get_seqs(status=SequenceStatus.WAITING):
             seq.status = SequenceStatus.RUNNING
@@ -411,6 +414,7 @@ class Scheduler:
         seq_group: SequenceGroup,
         blocks_to_copy: Dict[int, List[int]],
     ) -> None:
+        # logger.info("append slot")
         for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
             ret = self.block_manager.append_slot(seq)
             if ret is not None:

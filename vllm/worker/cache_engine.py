@@ -11,6 +11,9 @@ logger = init_logger(__name__)
 
 KVCache = Tuple[torch.Tensor, torch.Tensor]
 
+import os 
+USE_EXTER_CACHE = (os.environ.get('USE_EXTER_CACHE', 'False') == "True")
+
 
 class CacheEngine:
     """Manages the KV cache.
@@ -25,10 +28,12 @@ class CacheEngine:
         cache_config: CacheConfig,
         model_config: ModelConfig,
         parallel_config: ParallelConfig,
+        kv_file = "/tmp/kv_cache"
     ) -> None:
         self.cache_config = cache_config
         self.model_config = model_config
         self.parallel_config = parallel_config
+        self.kv_file = kv_file
 
         self.head_size = model_config.get_head_size()
         self.num_layers = model_config.get_num_layers(parallel_config)
@@ -48,7 +53,11 @@ class CacheEngine:
             self.dtype = STR_DTYPE_TO_TORCH_DTYPE[cache_config.cache_dtype]
 
         # Initialize the cache.
-        self.gpu_cache = self.allocate_gpu_cache()
+        if not USE_EXTER_CACHE: 
+            self.gpu_cache = self.allocate_gpu_cache()
+        else: 
+            self.gpu_cache = self.allocate_gpu_cache_external()
+
         self.cpu_cache = self.allocate_cpu_cache()
 
         # Initialize the stream for caching operations.
@@ -92,6 +101,20 @@ class CacheEngine:
             gpu_cache.append((key_blocks, value_blocks))
         return gpu_cache
 
+    def allocate_gpu_cache_external(self) -> List[KVCache]:
+        logger.info(f"reading external kv cache {self.kv_file}...")
+        external_cache: List[KVCache] = torch.load(self.kv_file)
+        gpu_cache: List[KVCache] = []
+
+        for key_blocks, value_blocks in external_cache:
+            # Move tensors to GPU and ensure they are of the correct dtype
+            key_blocks_gpu = key_blocks.to(device="cuda", dtype=self.dtype)
+            value_blocks_gpu = value_blocks.to(device="cuda", dtype=self.dtype)
+            gpu_cache.append((key_blocks_gpu, value_blocks_gpu))
+        return gpu_cache
+
+
+
     def allocate_cpu_cache(self) -> List[KVCache]:
         cpu_cache: List[KVCache] = []
         key_block_shape = self.get_key_block_shape()
@@ -126,6 +149,9 @@ class CacheEngine:
     ) -> None:
         from vllm._C import cache_ops
 
+        logger.info("called _swap")
+
+
         with torch.cuda.stream(self.cache_stream):
             for i in range(self.num_layers):
                 src_key_cache, src_value_cache = src[i]
@@ -146,6 +172,8 @@ class CacheEngine:
 
     def copy(self, src_to_dsts: Dict[int, List[int]]) -> None:
         from vllm._C import cache_ops
+
+        logger.info("called copy")
 
         key_caches = [key_cache for key_cache, _ in self.gpu_cache]
         value_caches = [value_cache for _, value_cache in self.gpu_cache]

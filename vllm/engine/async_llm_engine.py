@@ -1,3 +1,7 @@
+import zmq
+import torch
+
+
 import asyncio
 import os
 import time
@@ -20,6 +24,8 @@ logger = init_logger(__name__)
 ENGINE_ITERATION_TIMEOUT_S = int(
     os.environ.get("VLLM_ENGINE_ITERATION_TIMEOUT_S", "60"))
 
+PUB_PORT = 9000
+KVCache = Tuple[torch.Tensor, torch.Tensor]
 
 class AsyncEngineDeadError(RuntimeError):
     pass
@@ -208,6 +214,7 @@ class _AsyncLLMEngine(LLMEngine):
 
         if not scheduler_outputs.is_empty():
             # Execute the model.
+            # logger.info("step async")
             output = await self.model_executor.execute_model_async(
                 seq_group_metadata_list, scheduler_outputs.blocks_to_swap_in,
                 scheduler_outputs.blocks_to_swap_out,
@@ -301,6 +308,7 @@ class AsyncLLMEngine:
                  log_requests: bool = True,
                  max_log_len: Optional[int] = None,
                  start_engine_loop: bool = True,
+                 pub_port = PUB_PORT, 
                  **kwargs) -> None:
         self.worker_use_ray = worker_use_ray
         self.engine_use_ray = engine_use_ray
@@ -316,6 +324,8 @@ class AsyncLLMEngine:
         self.start_engine_loop = start_engine_loop
         self._request_tracker: Optional[RequestTracker] = None
         self._errored_with: Optional[BaseException] = None
+
+        self.pub_port = pub_port
 
     @classmethod
     def from_engine_args(cls,
@@ -382,8 +392,13 @@ class AsyncLLMEngine:
         # Initialize the RequestTracker here so it uses the right event loop.
         self._request_tracker = RequestTracker()
 
+        # logger.info("prepare to entire engine loop")
         self._background_loop_unshielded = asyncio.get_event_loop(
         ).create_task(self.run_engine_loop())
+        
+        # logger.info("engine loop end")
+        
+        
         self._background_loop_unshielded.add_done_callback(
             partial(_raise_exception_on_finish,
                     error_callback=self._error_callback))
@@ -413,6 +428,7 @@ class AsyncLLMEngine:
 
         Returns True if there are in-progress requests."""
 
+        # logger.info("enter engine_step")
         new_requests, finished_requests = (
             self._request_tracker.get_new_and_finished_requests())
 
@@ -454,6 +470,7 @@ class AsyncLLMEngine:
             self.engine.abort_request(request_ids)
 
     async def run_engine_loop(self):
+        # logger.info("enter run engine loop")
         has_requests_in_progress = False
         while True:
             if not has_requests_in_progress:
@@ -472,6 +489,8 @@ class AsyncLLMEngine:
                 self.set_errored(exc)
                 raise
             await asyncio.sleep(0)
+        
+        logger.info("engine loop end")
 
     async def add_request(
         self,
@@ -522,7 +541,7 @@ class AsyncLLMEngine:
                 prompt=prompt,
                 prompt_token_ids=prompt_token_ids,
                 lora_request=lora_request)
-
+        # logger.info("before stream")
         stream = self._request_tracker.add_request(
             request_id,
             prompt=prompt,
@@ -606,6 +625,7 @@ class AsyncLLMEngine:
         # Preprocess the request.
         # This should not be used for logging, as it is monotonic time.
         arrival_time = time.monotonic()
+        logger.info("invoke generate")
 
         try:
             stream = await self.add_request(
@@ -624,6 +644,13 @@ class AsyncLLMEngine:
             # request.
             self._abort(request_id)
             raise e
+        
+        logger.info("end generate")
+        self.publish()
+        # logger.info(f"waiting length: {len(self.engine.scheduler.waiting)}")
+        # logger.info(f"running length: {len(self.engine.scheduler.running)}")
+        # logger.info(f"swapper length: {len(self.engine.scheduler.swapped)}")
+
 
     async def abort(self, request_id: str) -> None:
         """Abort a request.
@@ -683,3 +710,24 @@ class AsyncLLMEngine:
         else:
             await self.engine.check_health_async()
         logger.debug(f"Health check took {time.perf_counter()-t}s")
+    
+    def save_cache(self, kv_cache: List[KVCache], filename:str) -> None: 
+        torch.save(kv_cache, filename)
+
+    def publish(self) -> None:
+        kv_cache:List[KVCache] = self.engine.model_executor.driver_worker.cache_engine.gpu_cache
+
+        context = zmq.Context()
+        socket = context.socket(zmq.PUB)
+        socket.bind(f"tcp://*:{self.pub_port}")
+
+        kv_file = "/tmp/kv_cache"
+        self.save_cache(kv_cache, kv_file)
+
+        tries = 5
+        for _ in range(tries):
+            socket.send_string(kv_file)
+            time.sleep(0.1)
+        
+        logger.info("sent kv_file")
+        
