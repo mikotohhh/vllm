@@ -2,7 +2,7 @@
 
 Note: need to add huggingface token to download meta-llama/Llama-2-7b-chat-hf
 
-## Normal workflow 
+## Export and share KV cache
 start server
 ```
 python -m vllm.entrypoints.openai.api_server --model meta-llama/Llama-2-7b-chat-hf --max-model-len 2064 # default port 8000
@@ -14,9 +14,9 @@ python examples/gradio_openai_chatbot_webserver.py --model meta-llama/Llama-2-7b
 ```
 Open http://127.0.0.1:8001 and sent some prompts
 
-## Export and share KV cache
+After each new request, the kv cache will be saved under /tmp/kv_cache
 
-The kv cache will be saved under /tmp/kv_cache
+## Set USE_EXTER_CACHE=True will make cache engine initialize kv cache from /tmp/kv_cache
 
 start server
 ```
