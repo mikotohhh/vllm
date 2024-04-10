@@ -361,6 +361,9 @@ class Scheduler:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
         # such as self.running, self.swapped, and self.waiting.
+        
+        # logger.info(f"block tables (block manager) keys: {list(self.block_manager.block_tables.keys())}")
+
         scheduler_outputs = self._schedule()
         now = time.time()
 
@@ -391,12 +394,17 @@ class Scheduler:
             )
             seq_group_metadata_list.append(seq_group_metadata)
         
+        # logger.info(f"running length: {len(self.running)}")
+        # logger.info(f"waiting length: {len(self.waiting)}")
+        # logger.info(f"swap length: {len(self.swapped)}")
         return seq_group_metadata_list, scheduler_outputs
 
     def fork_seq(self, parent_seq: Sequence, child_seq: Sequence) -> None:
+        logger.info(f"sequence has been forked")
         self.block_manager.fork(parent_seq, child_seq)
 
     def free_seq(self, seq: Sequence) -> None:
+        logger.info(f"sequence is freed")
         self.block_manager.free(seq)
 
     def free_finished_seq_groups(self) -> None:

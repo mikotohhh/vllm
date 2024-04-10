@@ -49,11 +49,16 @@ class OpenAIServingChat(OpenAIServing):
         if error_check_ret is not None:
             return error_check_ret
 
+        logger.info(f"request msg: {request.messages}")
+        logger.info(f"raw request: {raw_request}")
         try:
             prompt = self.tokenizer.apply_chat_template(
                 conversation=request.messages,
                 tokenize=False,
                 add_generation_prompt=request.add_generation_prompt)
+            
+            logger.info(f"prompt len: {len(prompt)}")
+        
         except Exception as e:
             logger.error(
                 f"Error in applying chat template from request: {str(e)}")
@@ -76,9 +81,11 @@ class OpenAIServingChat(OpenAIServing):
         except ValueError as e:
             return self.create_error_response(str(e))
 
+        logger.info("generate ready")
         result_generator = self.engine.generate(prompt, sampling_params,
                                                 request_id, token_ids,
                                                 lora_request)
+        logger.info("generate end")
         # Streaming response
         if request.stream:
             return self.chat_completion_stream_generator(

@@ -1,5 +1,8 @@
 import zmq
 import torch
+import json 
+
+last_seq_group_metadata_list = None
 
 
 import asyncio
@@ -212,9 +215,11 @@ class _AsyncLLMEngine(LLMEngine):
         """
         seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
 
+        global last_seq_group_metadata_list
+        last_seq_group_metadata_list = seq_group_metadata_list.copy()
+
         if not scheduler_outputs.is_empty():
             # Execute the model.
-            # logger.info("step async")
             output = await self.model_executor.execute_model_async(
                 seq_group_metadata_list, scheduler_outputs.blocks_to_swap_in,
                 scheduler_outputs.blocks_to_swap_out,
@@ -222,6 +227,7 @@ class _AsyncLLMEngine(LLMEngine):
         else:
             output = []
 
+        
         return self._process_model_outputs(output, scheduler_outputs)
 
     async def encode_request_async(
@@ -271,7 +277,6 @@ class _AsyncLLMEngine(LLMEngine):
     async def check_health_async(self) -> None:
         self.model_executor.check_health()
 
-
 class AsyncLLMEngine:
     """An asynchronous wrapper for LLMEngine.
 
@@ -308,7 +313,6 @@ class AsyncLLMEngine:
                  log_requests: bool = True,
                  max_log_len: Optional[int] = None,
                  start_engine_loop: bool = True,
-                 pub_port = PUB_PORT, 
                  **kwargs) -> None:
         self.worker_use_ray = worker_use_ray
         self.engine_use_ray = engine_use_ray
@@ -324,8 +328,6 @@ class AsyncLLMEngine:
         self.start_engine_loop = start_engine_loop
         self._request_tracker: Optional[RequestTracker] = None
         self._errored_with: Optional[BaseException] = None
-
-        self.pub_port = pub_port
 
     @classmethod
     def from_engine_args(cls,
@@ -627,6 +629,8 @@ class AsyncLLMEngine:
         arrival_time = time.monotonic()
         logger.info("invoke generate")
 
+        logger.info(f"prompt length: {len(prompt)}")
+
         try:
             stream = await self.add_request(
                 request_id,
@@ -646,7 +650,9 @@ class AsyncLLMEngine:
             raise e
         
         logger.info("end generate")
-        self.publish()
+
+        bts = self.get_bts_dict()
+        self.publish(bts)
         # logger.info(f"waiting length: {len(self.engine.scheduler.waiting)}")
         # logger.info(f"running length: {len(self.engine.scheduler.running)}")
         # logger.info(f"swapper length: {len(self.engine.scheduler.swapped)}")
@@ -710,24 +716,35 @@ class AsyncLLMEngine:
         else:
             await self.engine.check_health_async()
         logger.debug(f"Health check took {time.perf_counter()-t}s")
-    
-    def save_cache(self, kv_cache: List[KVCache], filename:str) -> None: 
-        torch.save(kv_cache, filename)
 
-    def publish(self) -> None:
+    def publish(self, block_tables_dict) -> None:
         kv_cache:List[KVCache] = self.engine.model_executor.driver_worker.cache_engine.gpu_cache
 
         context = zmq.Context()
         socket = context.socket(zmq.PUB)
-        socket.bind(f"tcp://*:{self.pub_port}")
+        socket.bind(f"tcp://*:{PUB_PORT}")
 
         kv_file = "/tmp/kv_cache"
-        self.save_cache(kv_cache, kv_file)
+        btl_file = "/tmp/blk.json"
+        info = f"{kv_file} {btl_file}"
+
+        torch.save(kv_cache, kv_file)
+        with open(btl_file, 'w') as file:
+            json.dump(block_tables_dict, file)
 
         tries = 5
         for _ in range(tries):
-            socket.send_string(kv_file)
+            socket.send_string(info)
             time.sleep(0.1)
         
-        logger.info("sent kv_file")
+        logger.info("save kv_file & block_table_list")
         
+    def get_bts_dict(self):
+        block_tables_dict = {}
+
+        for seq_group_metadata in last_seq_group_metadata_list: 
+            block_tables = seq_group_metadata.block_tables
+            request_id = seq_group_metadata.request_id
+
+        block_tables_dict[request_id] = block_tables
+        return block_tables_dict

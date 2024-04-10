@@ -245,6 +245,10 @@ class LLMEngine:
                              f"{max_logprobs} logprobs.")
         if arrival_time is None:
             arrival_time = time.monotonic()
+
+        logger.info(f"request id: {request_id}")
+        logger.info(f"prompt len: {len(prompt)}")
+
         prompt_token_ids = self.encode_request(
             request_id=request_id,
             prompt=prompt,
@@ -270,6 +274,9 @@ class LLMEngine:
         # Add the sequence group to the scheduler.
         self.scheduler.add_seq_group(seq_group)
 
+        # logger.info(f"Exclude request!!!")
+        # self.scheduler.abort_seq_group(request_id)
+
     def abort_request(self, request_id: Union[str, Iterable[str]]) -> None:
         """Aborts a request(s) with the given ID.
 
@@ -287,6 +294,7 @@ class LLMEngine:
             >>> # abort the request
             >>> engine.abort_request(request_id)
         """
+        logger.info("enter llm engine abort")
         self.scheduler.abort_seq_group(request_id)
 
     def get_model_config(self) -> ModelConfig:
